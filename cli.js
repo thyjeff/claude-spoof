@@ -350,11 +350,23 @@ async function interactiveConfigEditor() {
         if (a === '__back') return;
         if (a === 'add') {
           const ans = await inquirer.prompt([
-            { type: 'input', name: 'name', message: 'Provider name:', validate: v => v.trim() ? true : 'required' },
-            { type: 'input', name: 'baseUrl', message: 'Base URL:', validate: v => v.startsWith('http') ? true : 'must start with http' },
-            { type: 'password', name: 'apiKey', message: 'API key:', mask: '*', validate: v => v.trim() ? true : 'required' },
+            { type: 'input', name: 'name', message: `Provider name ${color('(empty to cancel)', C.dim)}:`, validate: v => true },
           ]);
-          cfg.providers[ans.name.trim()] = { baseUrl: ans.baseUrl.replace(/\/+$/, ''), apiKey: ans.apiKey, authHeader: 'Authorization', authPrefix: 'Bearer ' };
+          if (!ans.name.trim()) continue;
+          const ans2 = await inquirer.prompt([
+            { type: 'input', name: 'baseUrl', message: `Base URL ${color('(empty to cancel)', C.dim)}:`, validate: v => true },
+          ]);
+          if (!ans2.baseUrl.trim()) continue;
+          const ans3 = await inquirer.prompt([
+            { type: 'password', name: 'apiKey', message: `API key ${color('(empty to cancel)', C.dim)}:`, mask: '*', validate: v => true },
+          ]);
+          if (!ans3.apiKey.trim()) continue;
+          if (!ans2.baseUrl.startsWith('http')) {
+            console.log(color('  ✗ Base URL must start with http', C.red));
+            await inquirer.prompt([{ type: 'input', name: '_', message: 'Press Enter to continue' }]);
+            continue;
+          }
+          cfg.providers[ans.name.trim()] = { baseUrl: ans2.baseUrl.replace(/\/+$/, ''), apiKey: ans3.apiKey, authHeader: 'Authorization', authPrefix: 'Bearer ' };
           dirty = true;
           continue;
         }
@@ -405,14 +417,22 @@ async function interactiveConfigEditor() {
         if (a === 'add') {
           const provNames = Object.keys(cfg.providers || {});
           const ans = await inquirer.prompt([
-            { type: 'input', name: 'spoof', message: 'Claude model name (e.g. claude-sonnet-4-20250514):', validate: v => v.trim() ? true : 'required' },
-            { type: 'list', name: 'provider', message: 'Provider:', choices: provNames.length ? provNames : [{ name: '(none configured)', value: '' }] },
-            { type: 'input', name: 'model', message: 'Model name on that provider:', validate: v => v.trim() ? true : 'required' },
+            { type: 'input', name: 'spoof', message: `Claude model name ${color('(empty to cancel)', C.dim)}:`, validate: v => true },
           ]);
-          if (ans.provider) {
-            cfg.mappings[ans.spoof.trim()] = `${ans.provider}:${ans.model.trim()}`;
-            dirty = true;
-          }
+          if (!ans.spoof.trim()) continue;
+          const provChoices = provNames.length
+            ? [...provNames, new inquirer.Separator(), { name: `  ${color('←', C.yellow)} Cancel`, value: '' }]
+            : [{ name: '(none configured — add a provider first)', value: '' }];
+          const ans2 = await inquirer.prompt([
+            { type: 'list', name: 'provider', message: 'Provider:', choices: provChoices },
+          ]);
+          if (!ans2.provider) continue;
+          const ans3 = await inquirer.prompt([
+            { type: 'input', name: 'model', message: `Model name ${color('(empty to cancel)', C.dim)}:`, validate: v => true },
+          ]);
+          if (!ans3.model.trim()) continue;
+          cfg.mappings[ans.spoof.trim()] = `${ans2.provider}:${ans3.model.trim()}`;
+          dirty = true;
           continue;
         }
         // Edit mapping
