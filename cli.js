@@ -332,8 +332,8 @@ async function interactiveConfigEditor() {
 
   function providerList(navigateTo) {
     return async () => {
-      const provs = Object.entries(cfg.providers || {});
       while (true) {
+        const provs = Object.entries(cfg.providers || {});
         console.clear();
         console.log(`  ${box('Providers')}`);
         console.log(`  ${color(`  ${provs.length} configured`, C.dim)}`);
@@ -409,8 +409,8 @@ async function interactiveConfigEditor() {
 
   function mappingList(navigateTo) {
     return async () => {
-      const maps = Object.entries(cfg.mappings || {}).filter(([k]) => k !== 'default');
       while (true) {
+        const maps = Object.entries(cfg.mappings || {}).filter(([k]) => k !== 'default');
         console.clear();
         console.log(`  ${box('Model Mappings')}`);
         console.log(`  ${color(`  ${maps.length} mappings`, C.dim)}`);
