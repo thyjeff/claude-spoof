@@ -374,10 +374,21 @@ async function interactiveConfigEditor() {
         const name = a.slice(5);
         const prov = cfg.providers[name];
         const editAns = await inquirer.prompt([
-          { type: 'input', name: 'baseUrl', message: 'Base URL:', default: prov.baseUrl },
-          { type: 'password', name: 'apiKey', message: 'API key:', default: prov.apiKey, mask: '*' },
+          { type: 'input', name: 'baseUrl', message: `Base URL ${color('(empty to cancel)', C.dim)}:`, default: prov.baseUrl },
+        ]);
+        if (!editAns.baseUrl.trim()) continue;
+        const editAns2 = await inquirer.prompt([
+          { type: 'password', name: 'apiKey', message: `API key ${color('(empty to cancel)', C.dim)}:`, default: prov.apiKey, mask: '*' },
+        ]);
+        if (!editAns2.apiKey.trim()) continue;
+        if (!editAns.baseUrl.startsWith('http')) {
+          console.log(color('  ✗ Base URL must start with http — not saved', C.red));
+          await inquirer.prompt([{ type: 'input', name: '_', message: 'Press Enter to continue' }]);
+          continue;
+        }
+        const { editAction } = await inquirer.prompt([
           {
-            type: 'list', name: 'action', message: 'Actions:',
+            type: 'list', name: 'editAction', message: 'Confirm:',
             choices: [
               { name: '  Save changes', value: 'save' },
               { name: `  ${color('✕', C.red)} Delete this provider`, value: 'delete' },
@@ -385,11 +396,11 @@ async function interactiveConfigEditor() {
             ],
           },
         ]);
-        if (editAns.action === 'delete') {
+        if (editAction === 'delete') {
           const { confirm } = await inquirer.prompt([{ type: 'confirm', name: 'confirm', message: `Delete provider "${name}"? All its mappings will break.`, default: false }]);
           if (confirm) { delete cfg.providers[name]; dirty = true; }
-        } else if (editAns.action === 'save') {
-          cfg.providers[name] = { ...prov, baseUrl: editAns.baseUrl.replace(/\/+$/, ''), apiKey: editAns.apiKey };
+        } else if (editAction === 'save') {
+          cfg.providers[name] = { ...prov, baseUrl: editAns.baseUrl.replace(/\/+$/, ''), apiKey: editAns2.apiKey };
           dirty = true;
         }
       }
@@ -442,11 +453,19 @@ async function interactiveConfigEditor() {
         const curModel = curModelParts.join(':');
         const editAns = await inquirer.prompt([
           {
-            type: 'input', name: 'target', message: `Target (provider:model):`, default: current,
-            validate: v => v.includes(':') ? true : 'must be provider:model',
+            type: 'input', name: 'target', message: `Target ${color('(empty to cancel)', C.dim)}:`, default: current,
+            validate: v => true,
           },
+        ]);
+        if (!editAns.target.trim()) continue;
+        if (!editAns.target.includes(':')) {
+          console.log(color('  ✗ Must be provider:model — not saved', C.red));
+          await inquirer.prompt([{ type: 'input', name: '_', message: 'Press Enter to continue' }]);
+          continue;
+        }
+        const { action: editAction } = await inquirer.prompt([
           {
-            type: 'list', name: 'action', message: 'Actions:',
+            type: 'list', name: 'action', message: 'Confirm:',
             choices: [
               { name: '  Save changes', value: 'save' },
               { name: `  ${color('✕', C.red)} Delete this mapping`, value: 'delete' },
@@ -454,10 +473,10 @@ async function interactiveConfigEditor() {
             ],
           },
         ]);
-        if (editAns.action === 'delete') {
+        if (editAction === 'delete') {
           const { confirm } = await inquirer.prompt([{ type: 'confirm', name: 'confirm', message: `Delete mapping "${spoof}"?`, default: false }]);
           if (confirm) { delete cfg.mappings[spoof]; dirty = true; }
-        } else if (editAns.action === 'save') {
+        } else if (editAction === 'save') {
           cfg.mappings[spoof] = editAns.target.trim();
           dirty = true;
         }
@@ -481,7 +500,8 @@ async function interactiveConfigEditor() {
         }]);
         if (a === '__back') return;
         if (a === 'default') {
-          const { d } = await inquirer.prompt([{ type: 'input', name: 'd', message: 'Default target (provider:model):', default: cfg.default || '' }]);
+          const { d } = await inquirer.prompt([{ type: 'input', name: 'd', message: `Default target ${color('(empty to cancel)', C.dim)}:`, default: cfg.default || '' }]);
+          if (!d.trim()) continue;
           cfg.default = d.trim();
           dirty = true;
         }
