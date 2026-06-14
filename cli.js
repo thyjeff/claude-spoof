@@ -6,6 +6,7 @@ const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const http = require('http');
 
+const inquirer = require('inquirer');
 const ROOT = __dirname;
 const PID_FILE = path.join(ROOT, 'proxy.pid');
 const CONFIG_FILE = path.join(ROOT, 'config.json');
@@ -276,24 +277,28 @@ program.command('reload')
   });
 
 // ── config ──
+// ── config ──
 program.command('config')
-  .description('Open config.json in editor (or show it)')
-  .option('-e, --edit', 'Open in default editor')
-  .option('-s, --show', 'Display config (default)')
-  .action((opts) => {
+  .description('Open config.json (or launch interactive TUI)')
+  .option('-e, --edit', 'Open in system-default editor')
+  .option('-s, --shell', 'Launch interactive TUI editor in terminal')
+  .action(async (opts) => {
     if (opts.edit) {
-      try {
-        execSync(`notepad "${CONFIG_FILE}"`, { stdio: 'inherit', timeout: 0 });
-      } catch {
-        execSync(`start "" "${CONFIG_FILE}"`, { stdio: 'inherit', timeout: 0 });
-      }
+      try { execSync(`cmd /c start "" "${CONFIG_FILE}"`, { stdio: 'ignore', timeout: 3000 }); }
+      catch { try { spawn(process.env.EDITOR || 'notepad', [CONFIG_FILE], { detached: true, stdio: 'ignore' }).unref(); } catch {} }
+      console.log(color('  ✓ Opened config.json in default editor', C.green));
       return;
     }
+    if (opts.shell) {
+      await interactiveConfigEditor();
+      return;
+    }
+    // Default: show
     banner();
     const cfg = readConfig();
     console.log(color('  Providers:', C.bright));
     for (const [name, prov] of Object.entries(cfg.providers || {})) {
-      console.log(color(`    ${name} → ${prov.baseUrl} [key: ${(prov.apiKey || '').slice(0, 8)}...]`, C.dim));
+      console.log(color(`    ${name.padEnd(16)} ${prov.baseUrl} [${(prov.apiKey || '').slice(0, 8)}...]`, C.dim));
     }
     console.log(color('\n  Mappings:', C.bright));
     for (const [spoof, target] of Object.entries(cfg.mappings || {})) {
@@ -301,8 +306,115 @@ program.command('config')
       console.log(color(`    ${spoof.padEnd(35)} → ${target}`, C.dim));
     }
     console.log(color(`\n  Default: ${cfg.default || '(none)'}`, C.dim));
-    console.log(color(`  Config:  ${CONFIG_FILE}`, C.dim));
+    console.log(color(`  File:    ${CONFIG_FILE}`, C.dim));
+    console.log(color(`  Edit:    csp config -e   (system editor)`, C.dim));
+    console.log(color(`           csp config -s   (terminal UI)`, C.dim));
   });
+
+async function interactiveConfigEditor() {
+  let cfg = readConfig();
+  let dirty = false;
+
+  const menuChoices = () => {
+    const items = [];
+    const provs = Object.entries(cfg.providers || {});
+    const maps = Object.entries(cfg.mappings || {}).filter(([k]) => k !== 'default');
+    items.push({ name: `── Providers ──`, disabled: true });
+    for (const [name, prov] of provs) {
+      items.push({ name: `  [P] ${name.padEnd(14)} ${prov.baseUrl}`, value: `p_${name}` });
+    }
+    items.push({ name: `  ➕ Add provider`, value: 'add_provider' });
+    items.push({ name: `── Mappings ──`, disabled: true });
+    for (const [spoof, target] of maps) {
+      items.push({ name: `  [M] ${spoof.padEnd(33)} → ${target}`, value: `m_${spoof}` });
+    }
+    items.push({ name: `  ➕ Add mapping`, value: 'add_mapping' });
+    items.push({ name: `── Actions ──`, disabled: true });
+    if (dirty) items.push({ name: `  💾 Save & reload`, value: 'save' });
+    items.push({ name: `  🔄 Reload from disk`, value: 'reload' });
+    items.push({ name: `  ❌ Exit`, value: 'exit' });
+    return items;
+  };
+
+  while (true) {
+    console.clear();
+    console.log(color(`\n  ╔══════════════════════════════════════════╗`, C.cyan));
+    console.log(color(`  ║      Config Editor  —  Terminal UI      ║`, C.cyan));
+    console.log(color(`  ╚══════════════════════════════════════════╝`, C.cyan));
+    console.log(color(`  default: ${cfg.default || '(none)'}`, dirty ? C.yellow : C.dim));
+    console.log('');
+
+    const { action } = await inquirer.prompt([{
+      type: 'list', name: 'action', pageSize: 20,
+      message: 'Select item to edit:',
+      choices: menuChoices(),
+      loop: false,
+    }]);
+
+    if (action === 'exit') break;
+    if (action === 'save') { saveCfg(); dirty = false; continue; }
+    if (action === 'reload') { cfg = readConfig(); dirty = false; continue; }
+    if (action === 'add_provider') {
+      const ans = await inquirer.prompt([
+        { type: 'input', name: 'name', message: 'Provider name:', validate: v => v.trim() ? true : 'required' },
+        { type: 'input', name: 'baseUrl', message: 'Base URL:', validate: v => v.startsWith('http') ? true : 'must start with http' },
+        { type: 'password', name: 'apiKey', message: 'API key:', validate: v => v.trim() ? true : 'required' },
+      ]);
+      cfg.providers = cfg.providers || {};
+      cfg.providers[ans.name.trim()] = { baseUrl: ans.baseUrl.replace(/\/+$/, ''), apiKey: ans.apiKey, authHeader: 'Authorization', authPrefix: 'Bearer ' };
+      dirty = true;
+      continue;
+    }
+    if (action === 'add_mapping') {
+      const ans = await inquirer.prompt([
+        { type: 'input', name: 'spoof', message: 'Claude model name (e.g. claude-sonnet-4-20250514):', validate: v => v.trim() ? true : 'required' },
+        { type: 'input', name: 'target', message: 'Target (provider:model, e.g. ollama:gemma4:31b-cloud):', validate: v => v.includes(':') ? true : 'must include colon' },
+      ]);
+      cfg.mappings = cfg.mappings || {};
+      cfg.mappings[ans.spoof.trim()] = ans.target.trim();
+      dirty = true;
+      continue;
+    }
+
+    // Edit provider
+    if (action.startsWith('p_')) {
+      const name = action.slice(2);
+      const prov = cfg.providers[name];
+      const ans = await inquirer.prompt([
+        { type: 'input', name: 'baseUrl', message: `Base URL for ${name}:`, default: prov.baseUrl },
+        { type: 'password', name: 'apiKey', message: `API key for ${name}:`, default: prov.apiKey },
+      ]);
+      cfg.providers[name] = { ...prov, baseUrl: ans.baseUrl.replace(/\/+$/, ''), apiKey: ans.apiKey };
+      dirty = true;
+      continue;
+    }
+
+    // Edit mapping
+    if (action.startsWith('m_')) {
+      const spoof = action.slice(2);
+      const current = cfg.mappings[spoof];
+      const ans = await inquirer.prompt([
+        { type: 'input', name: 'target', message: `Target for ${spoof}:`, default: current },
+        { type: 'list', name: 'what', message: 'Also:', choices: [{ name: 'Save', value: 'save' }, { name: 'Delete this mapping', value: 'delete' }] },
+      ]);
+      if (ans.what === 'delete') { delete cfg.mappings[spoof]; }
+      else { cfg.mappings[spoof] = ans.target.trim(); }
+      dirty = true;
+      continue;
+    }
+  }
+
+  if (dirty) {
+    const { s } = await inquirer.prompt([{ type: 'confirm', name: 's', message: 'Unsaved changes. Save?', default: true }]);
+    if (s) saveCfg();
+  }
+
+  function saveCfg() {
+    writeConfig(cfg);
+    try { http.request(`${CONFIG.host}:${CONFIG.port}/admin/reload`, { method: 'POST' }).end(); } catch {}
+    console.log(color('\n  ✓ Saved & reloaded\n', C.green));
+  }
+}
 
 // ── logs ──
 program.command('logs')
