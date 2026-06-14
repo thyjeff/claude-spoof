@@ -52,6 +52,8 @@ csp models                  List all model mappings
 csp providers               List configured providers
 csp dashboard               Live-updating dashboard (Ctrl+C to exit)
 csp config                  Show current configuration
+csp config -e               Open config.json in system-default editor
+csp config -s               Launch interactive terminal UI config editor
 csp logs                    Tail proxy logs
 csp reload                  Hot-reload config.json without restart
 
@@ -120,11 +122,34 @@ Each mapping is `providerName:actualModelName`. The proxy routes each request to
 - **Image support** — Base64 image passthrough
 - **Live dashboard** — Real-time stats with model-level breakdown
 - **Spoofing** — All responses appear as a real Anthropic model to the client
+- **Interactive config editor** — Edit providers and mappings in a terminal TUI (`csp config -s`) with sub-menus, back navigation, add/delete/edit support
+- **System editor integration** — Open `config.json` directly in your default JSON editor (`csp config -e`)
 
 ## Requirements
 
 - Node.js 18+
 - An API key from your upstream provider (OpenRouter, DeepSeek, etc.)
+
+## Config Editor (TUI)
+
+Launch the interactive terminal UI with `csp config -s`:
+
+```
+  ┌──────────────────────────────────────────────────┐
+  │         Config Editor  —  Interactive            │
+  └──────────────────────────────────────────────────┘
+   9 providers  ·  14 mappings
+
+  ☁  Providers              [9]
+  ⇄  Model Mappings         [14]
+  ⚙  Settings               (ollama:gemma4:31b-cloud)
+  ──────────────
+  💾  Save changes & reload proxy
+  ↻  Reload from disk (discard changes)
+  ✕  Exit
+```
+
+Browse and edit providers, mappings, and settings through organized sub-menus. Every screen has a back option — either `← Back to main menu`, `(empty to cancel)` on inputs, or `← Cancel` on lists. Changes are tracked with an unsaved indicator and can be saved/reloaded with a single keypress.
 
 ## License
 
