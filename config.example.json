@@ -1,0 +1,18 @@
+{
+  "providers": {
+    "openrouter": {
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKey": "sk-or-v1-your-key-here"
+    },
+    "deepseek": {
+      "baseUrl": "https://api.deepseek.com/v1",
+      "apiKey": "sk-your-key-here"
+    }
+  },
+  "mappings": {
+    "claude-sonnet-4-20250514":  "openrouter:deepseek/deepseek-chat",
+    "claude-opus-4-20250514":    "openrouter:openai/gpt-4o",
+    "claude-haiku-3-5-20241022": "deepseek:deepseek-chat"
+  },
+  "default": "openrouter:deepseek/deepseek-chat"
+}

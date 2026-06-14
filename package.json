@@ -1,0 +1,21 @@
+{
+  "name": "claude-spoof-proxy",
+  "version": "1.0.0",
+  "description": "Proxy that makes non-Anthropic models appear as Anthropic models to Claude Code/Desktop",
+  "main": "server.js",
+  "bin": {
+    "csp": "cli.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "csp": "node cli.js"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "commander": "^12.1.0",
+    "dotenv": "^17.4.2",
+    "express": "^4.18.2",
+    "node-fetch": "^2.7.0"
+  }
+}
