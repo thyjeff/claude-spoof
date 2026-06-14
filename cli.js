@@ -311,108 +311,200 @@ program.command('config')
     console.log(color(`           csp config -s   (terminal UI)`, C.dim));
   });
 
+const PAGE_SIZE = 12;
+
+function box(title) {
+  const pad = 46 - title.length;
+  const left = Math.floor(pad / 2);
+  const right = pad - left;
+  return `┌${'─'.repeat(left)} ${title} ${'─'.repeat(right)}┐`;
+}
+
 async function interactiveConfigEditor() {
   let cfg = readConfig();
   let dirty = false;
-
-  const menuChoices = () => {
-    const items = [];
-    const provs = Object.entries(cfg.providers || {});
-    const maps = Object.entries(cfg.mappings || {}).filter(([k]) => k !== 'default');
-    items.push({ name: `── Providers ──`, disabled: true });
-    for (const [name, prov] of provs) {
-      items.push({ name: `  [P] ${name.padEnd(14)} ${prov.baseUrl}`, value: `p_${name}` });
-    }
-    items.push({ name: `  ➕ Add provider`, value: 'add_provider' });
-    items.push({ name: `── Mappings ──`, disabled: true });
-    for (const [spoof, target] of maps) {
-      items.push({ name: `  [M] ${spoof.padEnd(33)} → ${target}`, value: `m_${spoof}` });
-    }
-    items.push({ name: `  ➕ Add mapping`, value: 'add_mapping' });
-    items.push({ name: `── Actions ──`, disabled: true });
-    if (dirty) items.push({ name: `  💾 Save & reload`, value: 'save' });
-    items.push({ name: `  🔄 Reload from disk`, value: 'reload' });
-    items.push({ name: `  ❌ Exit`, value: 'exit' });
-    return items;
-  };
-
-  while (true) {
-    console.clear();
-    console.log(color(`\n  ╔══════════════════════════════════════════╗`, C.cyan));
-    console.log(color(`  ║      Config Editor  —  Terminal UI      ║`, C.cyan));
-    console.log(color(`  ╚══════════════════════════════════════════╝`, C.cyan));
-    console.log(color(`  default: ${cfg.default || '(none)'}`, dirty ? C.yellow : C.dim));
-    console.log('');
-
-    const { action } = await inquirer.prompt([{
-      type: 'list', name: 'action', pageSize: 20,
-      message: 'Select item to edit:',
-      choices: menuChoices(),
-      loop: false,
-    }]);
-
-    if (action === 'exit') break;
-    if (action === 'save') { saveCfg(); dirty = false; continue; }
-    if (action === 'reload') { cfg = readConfig(); dirty = false; continue; }
-    if (action === 'add_provider') {
-      const ans = await inquirer.prompt([
-        { type: 'input', name: 'name', message: 'Provider name:', validate: v => v.trim() ? true : 'required' },
-        { type: 'input', name: 'baseUrl', message: 'Base URL:', validate: v => v.startsWith('http') ? true : 'must start with http' },
-        { type: 'password', name: 'apiKey', message: 'API key:', validate: v => v.trim() ? true : 'required' },
-      ]);
-      cfg.providers = cfg.providers || {};
-      cfg.providers[ans.name.trim()] = { baseUrl: ans.baseUrl.replace(/\/+$/, ''), apiKey: ans.apiKey, authHeader: 'Authorization', authPrefix: 'Bearer ' };
-      dirty = true;
-      continue;
-    }
-    if (action === 'add_mapping') {
-      const ans = await inquirer.prompt([
-        { type: 'input', name: 'spoof', message: 'Claude model name (e.g. claude-sonnet-4-20250514):', validate: v => v.trim() ? true : 'required' },
-        { type: 'input', name: 'target', message: 'Target (provider:model, e.g. ollama:gemma4:31b-cloud):', validate: v => v.includes(':') ? true : 'must include colon' },
-      ]);
-      cfg.mappings = cfg.mappings || {};
-      cfg.mappings[ans.spoof.trim()] = ans.target.trim();
-      dirty = true;
-      continue;
-    }
-
-    // Edit provider
-    if (action.startsWith('p_')) {
-      const name = action.slice(2);
-      const prov = cfg.providers[name];
-      const ans = await inquirer.prompt([
-        { type: 'input', name: 'baseUrl', message: `Base URL for ${name}:`, default: prov.baseUrl },
-        { type: 'password', name: 'apiKey', message: `API key for ${name}:`, default: prov.apiKey },
-      ]);
-      cfg.providers[name] = { ...prov, baseUrl: ans.baseUrl.replace(/\/+$/, ''), apiKey: ans.apiKey };
-      dirty = true;
-      continue;
-    }
-
-    // Edit mapping
-    if (action.startsWith('m_')) {
-      const spoof = action.slice(2);
-      const current = cfg.mappings[spoof];
-      const ans = await inquirer.prompt([
-        { type: 'input', name: 'target', message: `Target for ${spoof}:`, default: current },
-        { type: 'list', name: 'what', message: 'Also:', choices: [{ name: 'Save', value: 'save' }, { name: 'Delete this mapping', value: 'delete' }] },
-      ]);
-      if (ans.what === 'delete') { delete cfg.mappings[spoof]; }
-      else { cfg.mappings[spoof] = ans.target.trim(); }
-      dirty = true;
-      continue;
-    }
-  }
-
-  if (dirty) {
-    const { s } = await inquirer.prompt([{ type: 'confirm', name: 's', message: 'Unsaved changes. Save?', default: true }]);
-    if (s) saveCfg();
-  }
 
   function saveCfg() {
     writeConfig(cfg);
     try { http.request(`${CONFIG.host}:${CONFIG.port}/admin/reload`, { method: 'POST' }).end(); } catch {}
     console.log(color('\n  ✓ Saved & reloaded\n', C.green));
+  }
+
+  function providerList(navigateTo) {
+    return async () => {
+      const provs = Object.entries(cfg.providers || {});
+      while (true) {
+        console.clear();
+        console.log(`  ${box('Providers')}`);
+        console.log(`  ${color(`  ${provs.length} configured`, C.dim)}`);
+        console.log('');
+        const choices = provs.map(([name, p]) => ({
+          name: `  ${color('●', C.green)} ${color(name.padEnd(16), C.cyan)}${color(p.baseUrl, C.dim)}`,
+          value: `edit_${name}`,
+          short: name,
+        }));
+        choices.push(new inquirer.Separator());
+        choices.push({ name: `  ${color('＋', C.green)} Add new provider`, value: 'add' });
+        choices.push({ name: `  ${color('←', C.yellow)} Back to main menu`, value: '__back' });
+        const { a } = await inquirer.prompt([{ type: 'list', name: 'a', message: 'Select provider:', pageSize: PAGE_SIZE, choices }]);
+        if (a === '__back') return;
+        if (a === 'add') {
+          const ans = await inquirer.prompt([
+            { type: 'input', name: 'name', message: 'Provider name:', validate: v => v.trim() ? true : 'required' },
+            { type: 'input', name: 'baseUrl', message: 'Base URL:', validate: v => v.startsWith('http') ? true : 'must start with http' },
+            { type: 'password', name: 'apiKey', message: 'API key:', mask: '*', validate: v => v.trim() ? true : 'required' },
+          ]);
+          cfg.providers[ans.name.trim()] = { baseUrl: ans.baseUrl.replace(/\/+$/, ''), apiKey: ans.apiKey, authHeader: 'Authorization', authPrefix: 'Bearer ' };
+          dirty = true;
+          continue;
+        }
+        // Edit provider
+        const name = a.slice(5);
+        const prov = cfg.providers[name];
+        const editAns = await inquirer.prompt([
+          { type: 'input', name: 'baseUrl', message: 'Base URL:', default: prov.baseUrl },
+          { type: 'password', name: 'apiKey', message: 'API key:', default: prov.apiKey, mask: '*' },
+          {
+            type: 'list', name: 'action', message: 'Actions:',
+            choices: [
+              { name: '  Save changes', value: 'save' },
+              { name: `  ${color('✕', C.red)} Delete this provider`, value: 'delete' },
+              { name: `  ${color('←', C.yellow)} Back`, value: 'back' },
+            ],
+          },
+        ]);
+        if (editAns.action === 'delete') {
+          const { confirm } = await inquirer.prompt([{ type: 'confirm', name: 'confirm', message: `Delete provider "${name}"? All its mappings will break.`, default: false }]);
+          if (confirm) { delete cfg.providers[name]; dirty = true; }
+        } else if (editAns.action === 'save') {
+          cfg.providers[name] = { ...prov, baseUrl: editAns.baseUrl.replace(/\/+$/, ''), apiKey: editAns.apiKey };
+          dirty = true;
+        }
+      }
+    };
+  }
+
+  function mappingList(navigateTo) {
+    return async () => {
+      const maps = Object.entries(cfg.mappings || {}).filter(([k]) => k !== 'default');
+      while (true) {
+        console.clear();
+        console.log(`  ${box('Model Mappings')}`);
+        console.log(`  ${color(`  ${maps.length} mappings`, C.dim)}`);
+        console.log('');
+        const choices = maps.map(([spoof, target]) => ({
+          name: `  ${color(spoof.padEnd(32), C.cyan)} ${color('→', C.dim)} ${color(target, C.green)}`,
+          value: `edit_${spoof}`,
+          short: spoof,
+        }));
+        choices.push(new inquirer.Separator());
+        choices.push({ name: `  ${color('＋', C.green)} Add new mapping`, value: 'add' });
+        choices.push({ name: `  ${color('←', C.yellow)} Back to main menu`, value: '__back' });
+        const { a } = await inquirer.prompt([{ type: 'list', name: 'a', message: 'Select mapping:', pageSize: PAGE_SIZE, choices }]);
+        if (a === '__back') return;
+        if (a === 'add') {
+          const provNames = Object.keys(cfg.providers || {});
+          const ans = await inquirer.prompt([
+            { type: 'input', name: 'spoof', message: 'Claude model name (e.g. claude-sonnet-4-20250514):', validate: v => v.trim() ? true : 'required' },
+            { type: 'list', name: 'provider', message: 'Provider:', choices: provNames.length ? provNames : [{ name: '(none configured)', value: '' }] },
+            { type: 'input', name: 'model', message: 'Model name on that provider:', validate: v => v.trim() ? true : 'required' },
+          ]);
+          if (ans.provider) {
+            cfg.mappings[ans.spoof.trim()] = `${ans.provider}:${ans.model.trim()}`;
+            dirty = true;
+          }
+          continue;
+        }
+        // Edit mapping
+        const spoof = a.slice(5);
+        const current = cfg.mappings[spoof];
+        const [curProv, ...curModelParts] = current.split(':');
+        const curModel = curModelParts.join(':');
+        const editAns = await inquirer.prompt([
+          {
+            type: 'input', name: 'target', message: `Target (provider:model):`, default: current,
+            validate: v => v.includes(':') ? true : 'must be provider:model',
+          },
+          {
+            type: 'list', name: 'action', message: 'Actions:',
+            choices: [
+              { name: '  Save changes', value: 'save' },
+              { name: `  ${color('✕', C.red)} Delete this mapping`, value: 'delete' },
+              { name: `  ${color('←', C.yellow)} Back`, value: 'back' },
+            ],
+          },
+        ]);
+        if (editAns.action === 'delete') {
+          const { confirm } = await inquirer.prompt([{ type: 'confirm', name: 'confirm', message: `Delete mapping "${spoof}"?`, default: false }]);
+          if (confirm) { delete cfg.mappings[spoof]; dirty = true; }
+        } else if (editAns.action === 'save') {
+          cfg.mappings[spoof] = editAns.target.trim();
+          dirty = true;
+        }
+      }
+    };
+  }
+
+  function settingsMenu() {
+    return async () => {
+      while (true) {
+        console.clear();
+        console.log(`  ${box('Settings')}`);
+        console.log('');
+        const { a } = await inquirer.prompt([{
+          type: 'list', name: 'a', message: 'Settings:',
+          choices: [
+            { name: `  Default target: ${color(cfg.default || '(not set)', C.yellow)}`, value: 'default' },
+            new inquirer.Separator(),
+            { name: `  ${color('←', C.yellow)} Back to main menu`, value: '__back' },
+          ],
+        }]);
+        if (a === '__back') return;
+        if (a === 'default') {
+          const { d } = await inquirer.prompt([{ type: 'input', name: 'd', message: 'Default target (provider:model):', default: cfg.default || '' }]);
+          cfg.default = d.trim();
+          dirty = true;
+        }
+      }
+    };
+  }
+
+  const menuSections = {
+    providers: { label: 'Providers', icon: '☁', handler: providerList() },
+    mappings: { label: 'Model Mappings', icon: '⇄', handler: mappingList() },
+    settings: { label: 'Settings', icon: '⚙', handler: settingsMenu() },
+  };
+
+  while (true) {
+    const provCount = Object.keys(cfg.providers || {}).length;
+    const mapCount = Object.keys(cfg.mappings || {}).filter(k => k !== 'default').length;
+    console.clear();
+    console.log(`  ${color(`┌──────────────────────────────────────────────────┐`, C.cyan)}`);
+    console.log(`  ${color(`│         Config Editor  —  Interactive          │`, C.cyan)}`);
+    console.log(`  ${color(`└──────────────────────────────────────────────────┘`, C.cyan)}`);
+    console.log(`  ${color(`  ${provCount} providers  ·  ${mapCount} mappings  ${dirty ? '  ·  ⚠ unsaved' : ''}`, dirty ? C.yellow : C.dim)}`);
+    console.log('');
+
+    const mainChoices = [
+      { name: `  ${color('☁', C.cyan)}  Providers${' '.repeat(23)}${color(`[${provCount}]`, C.dim)}`, value: 'providers' },
+      { name: `  ${color('⇄', C.cyan)}  Model Mappings${' '.repeat(19)}${color(`[${mapCount}]`, C.dim)}`, value: 'mappings' },
+      { name: `  ${color('⚙', C.cyan)}  Settings${' '.repeat(25)}${color(cfg.default || '(no default)', C.dim)}`, value: 'settings' },
+      new inquirer.Separator(),
+    ];
+    if (dirty) mainChoices.push({ name: `  ${color('💾', C.green)}  Save changes & reload proxy`, value: 'save' });
+    mainChoices.push({ name: `  ${color('↻', C.blue)}  Reload from disk (discard changes)`, value: 'reload' });
+    mainChoices.push({ name: `  ${color('✕', C.red)}  Exit`, value: 'exit' });
+
+    const { m } = await inquirer.prompt([{ type: 'list', name: 'm', message: 'Main menu:', pageSize: 10, choices: mainChoices }]);
+    if (m === 'exit') break;
+    if (m === 'save') { saveCfg(); dirty = false; continue; }
+    if (m === 'reload') { cfg = readConfig(); dirty = false; continue; }
+    if (menuSections[m]) await menuSections[m].handler();
+  }
+
+  if (dirty) {
+    const { s } = await inquirer.prompt([{ type: 'confirm', name: 's', message: 'Unsaved changes — save?', default: true }]);
+    if (s) { saveCfg(); console.log(color('  ✓ Saved & proxy reloaded\n', C.green)); }
   }
 }
 
