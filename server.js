@@ -516,22 +516,52 @@ async function handleStream(req, res, oaiReq, provider) {
 
   const ss = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   const msgId = makeId();
-  const emitToolUseBlock = (index, toolUse) => {
-    const input = toolUse.input && typeof toolUse.input === 'object' && !Array.isArray(toolUse.input)
-      ? toolUse.input
-      : {};
+
+  // Track tool block indices and accumulated arguments for incremental sending
+  const toolBlocks = {}; // idx -> { id, name, argBuf (string), startSent, startedAt }
+
+  function ensureToolBlockStarted(idx, id, name) {
+    if (toolBlocks[idx]?.startSent) return;
+    if (!toolBlocks[idx]) toolBlocks[idx] = { id: id || '', name: name || '', argBuf: '', startSent: false };
+    if (id) toolBlocks[idx].id = id;
+    if (name) toolBlocks[idx].name = name;
     ss('content_block_start', {
       type: 'content_block_start',
-      index,
-      content_block: { type: 'tool_use', id: toolUse.id || `call_${index}`, name: toolUse.name, input: {} },
+      index: idx,
+      content_block: { type: 'tool_use', id: toolBlocks[idx].id || `call_${idx}`, name: toolBlocks[idx].name, input: {} },
     });
+    toolBlocks[idx].startSent = true;
+  }
+
+  function emitToolArgDelta(idx, partialJson) {
+    if (!toolBlocks[idx]?.startSent) return;
     ss('content_block_delta', {
       type: 'content_block_delta',
-      index,
-      delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+      index: idx,
+      delta: { type: 'input_json_delta', partial_json: partialJson },
     });
-    ss('content_block_stop', { type: 'content_block_stop', index });
-  };
+  }
+
+  function finalizeToolBlock(idx, finalInput) {
+    if (!toolBlocks[idx]) return;
+    // Send the final input as a delta if we have accumulated arguments
+    const input = finalInput && typeof finalInput === 'object' && !Array.isArray(finalInput) ? finalInput : {};
+    if (toolBlocks[idx].startSent) {
+      // Already started — send final delta and stop
+      if (Object.keys(input).length) {
+        emitToolArgDelta(idx, JSON.stringify(input));
+      }
+      ss('content_block_stop', { type: 'content_block_stop', index: idx });
+    } else {
+      // Never started — emit start with the actual input, then stop
+      ss('content_block_start', {
+        type: 'content_block_start',
+        index: idx,
+        content_block: { type: 'tool_use', id: toolBlocks[idx].id || `call_${idx}`, name: toolBlocks[idx].name, input },
+      });
+      ss('content_block_stop', { type: 'content_block_stop', index: idx });
+    }
+  }
 
   try {
     const upstream = await upstreamFetch(provider, { ...oaiReq, stream: true });
@@ -556,7 +586,7 @@ async function handleStream(req, res, oaiReq, provider) {
     });
     ss('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
 
-    let textBuffer = '', toolCalls = {}, hasTools = false, finished = false, buf = '';
+    let textBuffer = '', hasTools = false, finished = false, buf = '';
     const decoder = new TextDecoder();
 
     upstream.body.on('data', chunk => {
@@ -581,12 +611,22 @@ async function handleStream(req, res, oaiReq, provider) {
         if (delta.tool_calls) {
           for (const tc of delta.tool_calls) {
             const idx = tc.index ?? 0;
-            if (!toolCalls[idx]) toolCalls[idx] = { id: '', name: '', arguments: '' };
-            if (tc.id) toolCalls[idx].id = tc.id;
-            if (tc.function?.name) toolCalls[idx].name = tc.function.name;
+            const id = tc.id || '';
+            const name = tc.function?.name || '';
+            ensureToolBlockStarted(idx, id, name);
+            if (id) toolBlocks[idx].id = id;
+            if (name) toolBlocks[idx].name = name;
             const argDelta = extractToolArguments(tc, '');
-            if (typeof argDelta === 'string') toolCalls[idx].arguments += argDelta;
-            else if (argDelta && typeof argDelta === 'object') toolCalls[idx].arguments = argDelta;
+            if (typeof argDelta === 'string') {
+              if (argDelta) {
+                toolBlocks[idx].argBuf += argDelta;
+                emitToolArgDelta(idx, argDelta);
+              }
+            } else if (argDelta && typeof argDelta === 'object') {
+              const json = JSON.stringify(argDelta);
+              toolBlocks[idx].argBuf = json; // replace with full object
+              emitToolArgDelta(idx, json);
+            }
             hasTools = true;
           }
         }
@@ -597,12 +637,13 @@ async function handleStream(req, res, oaiReq, provider) {
         if (finish && !finished) {
           finished = true;
           ss('content_block_stop', { type: 'content_block_stop', index: 0 });
-          let toolIdx = 1;
-          for (const tc of Object.values(toolCalls)) {
-            const input = repairToolInput(parseToolInput(tc.arguments, 'stream response'), tc.name, req.body);
-            logToolInput(tc.name, input, 'stream');
-            emitToolUseBlock(toolIdx, { type: 'tool_use', id: tc.id || `call_${toolIdx}`, name: tc.name, input });
-            toolIdx++;
+          const toolIndices = Object.keys(toolBlocks).map(Number).sort();
+          for (const idx of toolIndices) {
+            const tb = toolBlocks[idx];
+            const parsed = parseToolInput(tb.argBuf, 'stream response');
+            const input = repairToolInput(parsed, tb.name, req.body);
+            logToolInput(tb.name, input, 'stream');
+            finalizeToolBlock(idx, input);
           }
           const stopMap = { stop: 'end_turn', length: 'max_tokens', tool_calls: 'tool_use' };
           ss('message_delta', { type: 'message_delta', delta: { stop_reason: hasTools ? 'tool_use' : (stopMap[finish] || 'end_turn'), stop_sequence: null }, usage: { output_tokens: parsed.usage?.completion_tokens || textBuffer.length } });
@@ -614,7 +655,17 @@ async function handleStream(req, res, oaiReq, provider) {
     upstream.body.on('end', () => {
       if (!finished) {
         ss('content_block_stop', { type: 'content_block_stop', index: 0 });
-        if (req.body?.tool_choice?.type === 'tool') {
+        const toolIndices = Object.keys(toolBlocks).map(Number).sort();
+        if (toolIndices.length) {
+          for (const idx of toolIndices) {
+            const tb = toolBlocks[idx];
+            const parsed = parseToolInput(tb.argBuf, 'stream end');
+            const input = repairToolInput(parsed, tb.name, req.body);
+            logToolInput(tb.name, input, 'stream-end');
+            finalizeToolBlock(idx, input);
+          }
+          ss('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: textBuffer.length } });
+        } else if (req.body?.tool_choice?.type === 'tool') {
           const synthetic = synthesizeToolUse(req.body);
           ss('content_block_start', { type: 'content_block_start', index: 1, content_block: synthetic.content[0] });
           ss('content_block_stop', { type: 'content_block_stop', index: 1 });
